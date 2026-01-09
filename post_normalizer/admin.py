@@ -3,9 +3,7 @@ Django admin configuration for post_normalizer app.
 """
 from django.contrib import admin
 from django.utils.html import format_html
-from django.urls import reverse
 from django.utils import timezone
-from django.db.models import Count, Q
 from .models import (
     NormalizerGroup,
     AuthorPostCount,
@@ -24,23 +22,19 @@ class OldPostsNormalizationInline(admin.TabularInline):
     
     fields = [
         'batch_size',
-        'total_messages',
-        'processed_messages',
-        'progress_display',
-        'last_run_at',
+        'progress_percent_display',
         'is_running',
-        'action_button',
+        'last_run_at',
     ]
     
     readonly_fields = [
-        'progress_display',
+        'progress_percent_display',
         'last_run_at',
         'is_running',
-        'action_button',
     ]
     
-    def progress_display(self, obj: OldPostsNormalization) -> str:
-        """Display progress bar."""
+    def progress_percent_display(self, obj: OldPostsNormalization) -> str:
+        """Display progress percentage."""
         if not obj.pk:
             return '-'
         
@@ -55,24 +49,7 @@ class OldPostsNormalizationInline(admin.TabularInline):
             color,
             progress
         )
-    progress_display.short_description = 'Прогресс'
-    
-    def action_button(self, obj: OldPostsNormalization) -> str:
-        """Display action button."""
-        if not obj.pk:
-            return '-'
-        
-        if obj.is_running:
-            return format_html(
-                '<span style="color: #00aa00;">Выполняется...</span>'
-            )
-        
-        return format_html(
-            '<a href="#" onclick="alert(\'Используйте management команду для запуска\'); return false;" '
-            'style="background: #0066cc; color: white; padding: 5px 10px; text-decoration: none; border-radius: 3px;">'
-            'Запустить</a>'
-        )
-    action_button.short_description = 'Действие'
+    progress_percent_display.short_description = 'Прогресс'
 
 
 @admin.register(NormalizerGroup)
@@ -80,21 +57,18 @@ class NormalizerGroupAdmin(admin.ModelAdmin):
     """Admin interface for NormalizerGroup model."""
     
     inlines = [OldPostsNormalizationInline]
-    """Admin interface for NormalizerGroup model."""
     
     list_display = [
         'chat_id',
         'order',
         'country',
         'category',
-        'owner',
         'type',
-        'subscribers_count',
         'is_active',
-        'custom_signature',
-        'custom_buttons',
-        'custom_posts_count',
-        'custom_actions',
+        'buttons_count',
+        'invite_enabled',
+        'subscribers_count',
+        'owner',
     ]
     
     list_filter = [
@@ -103,6 +77,7 @@ class NormalizerGroupAdmin(admin.ModelAdmin):
         'country',
         'category',
         'invite_enabled',
+        'buttons_count',
     ]
     
     search_fields = [
@@ -147,7 +122,7 @@ class NormalizerGroupAdmin(admin.ModelAdmin):
             'fields': (
                 'suffix_text',
                 'buttons_count',
-                'button1_text',
+                'button_rotation_texts',
                 'button2_text',
             )
         }),
@@ -169,75 +144,10 @@ class NormalizerGroupAdmin(admin.ModelAdmin):
     
     readonly_fields = ['created_at', 'updated_at']
     
-    def custom_signature(self, obj: NormalizerGroup) -> str:
-        """Display suffix text preview."""
-        if obj.suffix_text:
-            preview = obj.suffix_text[:50] + '...' if len(obj.suffix_text) > 50 else obj.suffix_text
-            return format_html('<span title="{}">{}</span>', obj.suffix_text, preview)
-        return '-'
-    custom_signature.short_description = 'Подпись'
-    
-    def custom_buttons(self, obj: NormalizerGroup) -> str:
-        """Display button configuration."""
-        buttons = []
-        if obj.buttons_count >= 1:
-            buttons.append(obj.button1_text or 'Кнопка 1')
-        if obj.buttons_count >= 2:
-            buttons.append(obj.button2_text or 'Кнопка 2')
-        
-        if buttons:
-            return format_html(
-                '<span style="color: #0066cc;">{}</span>',
-                ' + '.join(buttons)
-            )
-        return format_html('<span style="color: #999;">Нет кнопок</span>')
-    custom_buttons.short_description = 'Кнопки'
-    
-    def custom_posts_count(self, obj: NormalizerGroup) -> str:
-        """Display post statistics."""
-        today = timezone.now().date()
-        week_ago = today - timezone.timedelta(days=7)
-        
-        # Count posts from PostHash in last 7 days
-        posts_count = PostHash.objects.filter(
-            group=obj,
-            created_at__gte=timezone.now() - timezone.timedelta(days=7)
-        ).count()
-        
-        return format_html(
-            '<strong>{}</strong> <span style="color: #666; font-size: 0.9em;">(7 дней)</span>',
-            posts_count
-        )
-    custom_posts_count.short_description = 'Постов'
-    
-    def custom_actions(self, obj: NormalizerGroup) -> str:
-        """Display action buttons."""
-        old_posts = OldPostsNormalization.objects.filter(group=obj).first()
-        if old_posts:
-            progress = old_posts.progress_percent
-            status = 'running' if old_posts.is_running else 'idle'
-            last_run = old_posts.last_run_at.strftime('%d.%m.%Y %H:%M') if old_posts.last_run_at else 'Никогда'
-            
-            return format_html(
-                '<div style="font-size: 0.85em;">'
-                '<div>Статус: <span style="color: {};">{}</span></div>'
-                '<div>Прогресс: <strong>{:.1f}%</strong></div>'
-                '<div>Запуск: {}</div>'
-                '</div>',
-                '#00aa00' if status == 'running' else '#666',
-                'Выполняется' if status == 'running' else 'Остановлен',
-                progress,
-                last_run
-            )
-        return format_html('<span style="color: #999;">Не настроено</span>')
-    custom_actions.short_description = 'Действия'
-    
     actions = ['start_old_posts_normalization']
     
     def start_old_posts_normalization(self, request, queryset):
-        """Action to start old posts normalization for selected groups."""
-        from django.contrib import messages
-        
+        """Действие для запуска нормализации старых постов."""
         count = 0
         for group in queryset:
             old_posts, created = OldPostsNormalization.objects.get_or_create(
@@ -249,7 +159,6 @@ class NormalizerGroupAdmin(admin.ModelAdmin):
                 }
             )
             if not old_posts.is_running:
-                # This will be handled by the management command
                 old_posts.is_running = True
                 old_posts.last_run_at = timezone.now()
                 old_posts.save()
@@ -337,12 +246,12 @@ class PostHashAdmin(admin.ModelAdmin):
     readonly_fields = ['created_at']
     
     def message_hash_short(self, obj: PostHash) -> str:
-        """Display shortened hash."""
+        """Отображение сокращенного хеша."""
         return f"{obj.message_hash[:16]}...{obj.message_hash[-8:]}"
     message_hash_short.short_description = 'Хеш'
     
     def get_queryset(self, request):
-        """Filter out old hashes (older than 3 days) by default."""
+        """Фильтрация старых хешей (старше 3 дней) по умолчанию."""
         qs = super().get_queryset(request)
         three_days_ago = timezone.now() - timezone.timedelta(days=3)
         return qs.filter(created_at__gte=three_days_ago)
@@ -375,7 +284,7 @@ class PendingInviteAdmin(admin.ModelAdmin):
     readonly_fields = ['added_at']
     
     def days_since_added(self, obj: PendingInvite) -> int:
-        """Calculate days since added."""
+        """Количество дней с момента добавления."""
         delta = timezone.now() - obj.added_at
         return delta.days
     days_since_added.short_description = 'Дней с добавления'
@@ -428,7 +337,7 @@ class OldPostsNormalizationAdmin(admin.ModelAdmin):
     ]
     
     def progress_display(self, obj: OldPostsNormalization) -> str:
-        """Display progress percentage."""
+        """Отображение процента выполнения."""
         progress = obj.progress_percent
         return format_html(
             '<strong>{:.1f}%</strong>',
@@ -454,6 +363,8 @@ class OldPostsNormalizationAdmin(admin.ModelAdmin):
             'fields': (
                 'is_running',
                 'last_run_at',
+                'error_message',
+                'task_id',
             )
         }),
         ('Метаданные', {
